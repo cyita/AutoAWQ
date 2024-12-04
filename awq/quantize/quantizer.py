@@ -75,6 +75,8 @@ class AwqQuantizer:
         if self.group_size > 0:
             assert org_w_shape[-1] % self.group_size == 0
             w = w.reshape(-1, self.group_size)
+        else:
+            w = w.reshape(-1, org_w_shape[-1])
         assert w.dim() == 2
         assert torch.isnan(w).sum() == 0
 
@@ -96,6 +98,7 @@ class AwqQuantizer:
             max_int = 2 ** (self.w_bit - 1) - 1
             min_int = -(2 ** (self.w_bit - 1))
             scales = max_val / max_int
+            # scales = max_val / min_int
             zeros = None
             w = torch.clamp(torch.round(w / scales), min_int, max_int) * scales
 
@@ -289,7 +292,8 @@ class AwqQuantizer:
         weight = torch.cat([_m.weight for _m in layers], dim=0)
         org_shape = weight.shape
         # The weights are reshaped to be organised by quantization group
-        weight = weight.view(-1, self.group_size)
+        if self.group_size > 0:
+            weight = weight.view(-1, self.group_size)
         # Calculates the relative magnitude of the weights within each of the quantization groups,
         # and rescales each group individually so that each group has weights on a 0-1 scale.
         w_scale = weight.abs() / (weight.abs().amax(dim=1, keepdim=True) + 1e-6)
@@ -407,6 +411,8 @@ class AwqQuantizer:
         if best_ratio == -1:
             logging.debug(history)
             raise Exception
+
+        print(f"best_ratio: {best_ratio}, best_error: {best_error}")
 
         assert torch.isnan(best_scales).sum() == 0, best_scales
 

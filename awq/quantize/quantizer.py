@@ -86,12 +86,21 @@ class AwqQuantizer:
             min_val = w.amin(dim=1, keepdim=True)
             max_int = 2**self.w_bit - 1
             min_int = 0
+            
             scales = (max_val - min_val).clamp(min=1e-5) / max_int
             zeros = (-torch.round(min_val / scales)).clamp_(min_int, max_int)
             w = (
                 torch.clamp(torch.round(w / scales) + zeros, min_int, max_int) - zeros
             ) * scales
             zeros = zeros.view(org_w_shape[0], -1)
+            
+            # scales = (max_val - min_val) / max_int
+            # zeros  = -min_val / scales
+            # a = (w / scales + zeros).to(torch.int8)
+            # w = (
+            #     torch.clamp(a + 0.5, min_int, max_int).to(torch.float16) - zeros
+            # ) * scales
+            # zeros = zeros.view(org_w_shape[0], -1)
         else:
             max_val = w.abs().amax(dim=1, keepdim=True)
             max_val = max_val.clamp(min=1e-5)
@@ -187,7 +196,7 @@ class AwqQuantizer:
 
             # [STEP 4]: Quantize weights
             if not self.export_compatible:
-                self._apply_quant(self.modules[i], named_linears)
+                self._apply_quant(self.modules[i], named_linears, pseudo=True)
 
             clear_memory()
 
@@ -200,7 +209,7 @@ class AwqQuantizer:
             self._apply_quant(self.modules[i], named_linears)
             clear_memory()
 
-    def _apply_quant(self, module, named_linears: Dict[str, nn.Linear]):
+    def _apply_quant(self, module, named_linears: Dict[str, nn.Linear], pseudo=False):
         for name, linear_layer in named_linears.items():
             # NOTE: small regression in perplexity if linear layer uses .cpu().float()
             linear_layer = linear_layer.to(get_best_device()).half()
@@ -209,36 +218,37 @@ class AwqQuantizer:
                 linear_layer.weight.data
             )
 
-            if self.version == "gemm":
-                scales = scales.t().contiguous()
-                if zeros is not None:
-                    zeros = zeros.t().contiguous()
-                q_linear_module = WQLinear_GEMM
+            if not pseudo:
+                if self.version == "gemm":
+                    scales = scales.t().contiguous()
+                    if zeros is not None:
+                        zeros = zeros.t().contiguous()
+                    q_linear_module = WQLinear_GEMM
 
-            elif self.version == "gemv":
-                q_linear_module = WQLinear_GEMV
+                elif self.version == "gemv":
+                    q_linear_module = WQLinear_GEMV
 
-            elif self.version == "marlin":
-                q_linear_module = WQLinear_Marlin
+                elif self.version == "marlin":
+                    q_linear_module = WQLinear_Marlin
 
-            elif self.version == "gemv_fast":
-                q_linear_module = WQLinear_GEMVFast
+                elif self.version == "gemv_fast":
+                    q_linear_module = WQLinear_GEMVFast
 
-            else:
-                raise ValueError(f"Unknown version {self.version}")
+                else:
+                    raise ValueError(f"Unknown version {self.version}")
 
-            q_linear = q_linear_module.from_linear(
-                linear=linear_layer,
-                w_bit=self.w_bit,
-                group_size=self.group_size,
-                init_only=False,
-                scales=scales,
-                zeros=zeros,
-            )
+                q_linear = q_linear_module.from_linear(
+                    linear=linear_layer,
+                    w_bit=self.w_bit,
+                    group_size=self.group_size if self.group_size != 0 else linear_layer.in_features,
+                    init_only=False,
+                    scales=scales,
+                    zeros=zeros,
+                )
 
-            linear_layer.cpu()
-            q_linear.to(next(module.parameters()).device)
-            set_op_by_name(module, name, q_linear)
+                linear_layer.cpu()
+                q_linear.to(next(module.parameters()).device)
+                set_op_by_name(module, name, q_linear)
             clear_memory()
 
     @torch.no_grad()
@@ -275,6 +285,7 @@ class AwqQuantizer:
         layers: List[nn.Linear],
         inp: torch.Tensor,
         module2inspect=None,
+        name=None,
         kwargs={},
     ):
         if module2inspect is None:
@@ -382,6 +393,7 @@ class AwqQuantizer:
             else:
                 scales = x_mean.pow(ratio).clamp(min=1e-4).view(-1)
             scales = scales / (scales.max() * scales.min()).sqrt()
+            # scales = torch.clamp(scales, min=1.0)
             scales_view = scales.view(1, -1).to(device)
 
             # avoid scaling values that overflow
@@ -412,7 +424,7 @@ class AwqQuantizer:
             logging.debug(history)
             raise Exception
 
-        print(f"best_ratio: {best_ratio}, best_error: {best_error}")
+        print(f"best_ratio: {best_ratio}, best_error: {best_error}, scales max: {torch.max(best_scales)}, scales mean: {torch.mean(best_scales)}")
 
         assert torch.isnan(best_scales).sum() == 0, best_scales
 
@@ -451,7 +463,7 @@ class AwqQuantizer:
         return loss
 
     @torch.no_grad()
-    def _search_best_clip(self, layer, named_linears, input_feat):
+    def _search_best_clip(self, layer, named_linears, input_feat, name=None):
         clip_list = []
         avoid_clipping = ["q_", "k_", "query", "key", "Wqkv"]
 

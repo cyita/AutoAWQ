@@ -1,5 +1,8 @@
 import argparse
+import lm_eval
+import json
 from lm_eval import evaluator
+from lm_eval.utils import handle_non_serializable, make_table, simple_parse_args_string
 from awq import AutoAWQForCausalLM
 from transformers import AutoTokenizer
 from awq.evaluation import (
@@ -20,9 +23,10 @@ def run_eval(
     tasks = tasks.split(',')
 
     # Load model
-    if len(tasks) == 1 and tasks[0] != "mmlu" and tasks[0] != "librispeech":
+    if tasks[0] != "mmlu" and tasks[0] != "librispeech":
         if task_use_pretrained:
-            model = AutoAWQForCausalLM.from_pretrained(model_path, safetensors=pretrained_safetensors)
+            model = AutoAWQForCausalLM.from_pretrained(model_path, safetensors=pretrained_safetensors,
+                                                       use_auth_token="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",)
         else:
             model = AutoAWQForCausalLM.from_quantized(model_path, quant_file, fuse_layers=False)
 
@@ -46,15 +50,27 @@ def run_eval(
 
     else:
         # Evaluate perplexity of quantized model
+        model = lm_eval.models.huggingface.HFLM(pretrained=model.model)
         results = evaluator.simple_evaluate(
             model=model,
             tasks=tasks,
             batch_size=task_batch_size,
-            no_cache=True,
+            # no_cache=True,
             num_fewshot=task_n_shot,
         )
 
-        print(evaluator.make_table(results))
+        if results is not None:
+            dumped = json.dumps(
+                results, indent=2, default=handle_non_serializable, ensure_ascii=False
+            )
+            import os
+            from datetime import datetime
+            now = datetime.now()
+            model_name = model_path.split('/')[-1]
+            os.makedirs(f"accuracy/{model_name}", exist_ok=True)
+            with open(f"accuracy/{model_name}/results-{now.strftime('%m%d%H%M%S')}.json", "w") as file:
+                file.write(dumped)
+        print(make_table(results))
 
 if __name__ == '__main__':
     """

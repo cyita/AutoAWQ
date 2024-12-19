@@ -123,7 +123,7 @@ class WQLinear_GEMM(nn.Module):
         self.in_features = in_features
         self.out_features = out_features
         self.w_bit = w_bit
-        self.group_size = group_size if group_size != -1 else in_features
+        self.group_size = group_size if group_size != 0 else in_features
         self.training = training
 
         # quick sanity check (make sure aligment)

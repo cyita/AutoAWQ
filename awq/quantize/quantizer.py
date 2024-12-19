@@ -1,3 +1,4 @@
+import time
 import torch
 import inspect
 import logging
@@ -23,6 +24,7 @@ from awq.utils.module import (
     exclude_layers_to_not_quantize,
 )
 
+logging.basicConfig(level=logging.INFO)
 
 class AwqQuantizer:
     def __init__(
@@ -168,8 +170,14 @@ class AwqQuantizer:
                 named_linears, self.modules_to_not_convert
             )
 
+            logging.info(f"Module: {i}")
+
+            t1 = time.perf_counter()
             input_feat = self._get_input_feat(self.modules[i], named_linears)
             clear_memory()
+            torch.cuda.synchronize()
+            t2 = time.perf_counter()
+            logging.info(f"Time get input features: {(t2 - t1)*1000:.2f}ms")
 
             # [STEP 2]: Compute and apply scale list
             module_config: List[Dict] = self.awq_model.get_layers_for_scaling(
@@ -183,6 +191,8 @@ class AwqQuantizer:
             scales_list = append_str_prefix(
                 scales_list, get_op_name(self.model, self.modules[i]) + "."
             )
+            t3 = time.perf_counter()
+            logging.info(f"Time scale search total: {(t3 - t2)*1000:.2f}ms")
 
             # [STEP 3]: Compute and apply clipping list
             if self.apply_clip:
@@ -193,6 +203,8 @@ class AwqQuantizer:
                 clip_list = append_str_prefix(
                     clip_list, get_op_name(self.model, self.modules[i]) + "."
                 )
+            t4 = time.perf_counter()
+            logging.info(f"Time clip search total: {(t4 - t3)*1000:.2f}ms")
 
             # [STEP 4]: Quantize weights
             if not self.export_compatible:
@@ -298,6 +310,8 @@ class AwqQuantizer:
         # Put x on the right device
         inp = inp.to(next(module2inspect.parameters()).device)
 
+        logging.info(f"Time search scale name: {name}")
+
         # [STEP 1]: Compute per-channel mean of normalised weights
         # All layer weights are concatted together
         weight = torch.cat([_m.weight for _m in layers], dim=0)
@@ -339,12 +353,18 @@ class AwqQuantizer:
         # [STEP 3]: Compute output of module
         with torch.no_grad():
             module_kwargs = self._sanitize_kwargs(kwargs, module2inspect)
+            t1 = time.perf_counter()
             fp16_output = self._module_forward(inp, module2inspect, module_kwargs)
+            torch.cuda.synchronize()
+            t2 = time.perf_counter()
+            logging.info(f"Time scale gt: {(t2 - t1)*1000:.2f}ms")
 
         # [STEP 4]: Compute loss
         best_scales = self._compute_best_scale(
             inp, w_mean, x_mean, module2inspect, layers, fp16_output, module_kwargs
         )
+        t3 = time.perf_counter()
+        logging.info(f"Time scale search: {(t3 - t2)*1000:.2f}ms")
 
         return (
             get_op_name(module, prev_op),
@@ -408,7 +428,11 @@ class AwqQuantizer:
                 )
 
             # W * X
+            t1 = time.perf_counter()
             int_w_output = self._module_forward(x, module2inspect, kwargs)
+            torch.cuda.synchronize()
+            t2 = time.perf_counter()
+            logging.info(f"Time scale sub: {(t2 - t1)*1000:.2f}ms")
 
             # compute mean squared error (L2 norm)
             loss = self._compute_loss(fp16_output, int_w_output, device)
@@ -421,7 +445,7 @@ class AwqQuantizer:
             module2inspect.load_state_dict(org_sd)
 
         if best_ratio == -1:
-            logging.debug(history)
+            logging.info(history)
             raise Exception
 
         print(f"best_ratio: {best_ratio}, best_error: {best_error}, scales max: {torch.max(best_scales)}, scales mean: {torch.mean(best_scales)}")
@@ -474,7 +498,7 @@ class AwqQuantizer:
 
             named_linears[name].to(get_best_device())
             max_val = self._compute_best_clip(
-                named_linears[name].weight, input_feat[name]
+                named_linears[name].weight, input_feat[name], name=name
             )
             clip_list.append((name, max_val))
             named_linears[name].cpu()
@@ -489,6 +513,7 @@ class AwqQuantizer:
         n_grid=20,
         max_shrink=0.5,
         n_sample_token=512,
+        name=None,
     ):
         assert w.dim() == 2
         org_w_shape = w.shape
@@ -509,6 +534,7 @@ class AwqQuantizer:
         w_all = w
         best_max_val_all = []
 
+        t1 = time.perf_counter()
         for i_b in range(org_w_shape[0] // oc_batch_size):
             w = w_all[i_b * oc_batch_size : (i_b + 1) * oc_batch_size]
 
@@ -534,6 +560,9 @@ class AwqQuantizer:
                 min_errs[cur_best_idx] = err[cur_best_idx]
                 best_max_val[cur_best_idx] = max_val[cur_best_idx]
             best_max_val_all.append(best_max_val)
+        torch.cuda.synchronize()
+        t2 = time.perf_counter()
+        logging.info(f"Time clip search name {name}: {(t2 - t1)*1000:.2f}ms")
 
         best_max_val = torch.cat(best_max_val_all, dim=0)
 

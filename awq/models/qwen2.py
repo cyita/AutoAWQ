@@ -49,6 +49,7 @@ class Qwen2AWQForCausalLM(BaseAWQForCausalLM):
                 inp=input_feat["self_attn.q_proj"],
                 module2inspect=module.self_attn,
                 kwargs=module_kwargs,
+                name="qkv_proj",
             )
         )
 
@@ -60,6 +61,7 @@ class Qwen2AWQForCausalLM(BaseAWQForCausalLM):
                     prev_op=module.self_attn.v_proj,
                     layers=[module.self_attn.o_proj],
                     inp=input_feat["self_attn.o_proj"],
+                    name="o_proj",
                 )
             )
 
@@ -70,6 +72,7 @@ class Qwen2AWQForCausalLM(BaseAWQForCausalLM):
                 layers=[module.mlp.gate_proj, module.mlp.up_proj],
                 inp=input_feat["mlp.gate_proj"],
                 module2inspect=module.mlp,
+                name="gate_up_proj",
             )
         )
 
@@ -79,6 +82,7 @@ class Qwen2AWQForCausalLM(BaseAWQForCausalLM):
                 prev_op=module.mlp.up_proj,
                 layers=[module.mlp.down_proj],
                 inp=input_feat["mlp.down_proj"],
+                name="down_proj",
             )
         )
 

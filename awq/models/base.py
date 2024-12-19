@@ -274,6 +274,7 @@ class BaseAWQForCausalLM(nn.Module):
         shard_size: Annotated[
             str, Doc("The shard size for sharding large models into multiple chunks.")
         ] = "5GB",
+        export_compatible = False,
     ):
         save_dir = save_dir[:-1] if save_dir[-1] == "/" else save_dir
 
@@ -286,7 +287,8 @@ class BaseAWQForCausalLM(nn.Module):
                 return x
 
         # Save model and config files with empty state dict
-        self.model.config.quantization_config = self.quant_config.to_transformers_dict()
+        if not export_compatible:
+            self.model.config.quantization_config = self.quant_config.to_transformers_dict()
         self.model.generation_config.do_sample = True
         self.model.save_pretrained(save_dir, state_dict=EmptyModule().state_dict())
 
@@ -357,6 +359,7 @@ class BaseAWQForCausalLM(nn.Module):
             safetensors,
             trust_remote_code=trust_remote_code,
             download_kwargs=download_kwargs,
+            use_auth_token="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",
         )
 
         target_cls_name = TRANSFORMERS_AUTO_MAPPING_DICT[config.model_type]
@@ -579,7 +582,7 @@ class BaseAWQForCausalLM(nn.Module):
                     ignore_patterns.extend(download_kwargs_ignore_patterns)
 
             model_path = snapshot_download(
-                model_path, ignore_patterns=ignore_patterns, **download_kwargs
+                model_path, ignore_patterns=ignore_patterns, use_auth_token="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", **download_kwargs
             )
 
         if model_filename != "":

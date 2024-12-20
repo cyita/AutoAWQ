@@ -5,7 +5,7 @@ from lm_eval import evaluator
 from datasets import load_dataset
 from transformers import pipeline
 from evaluate import load as load_metric
-from lm_eval.tasks import initialize_tasks
+# from lm_eval.tasks import initialize_tasks
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers.models.whisper.english_normalizer import BasicTextNormalizer
 

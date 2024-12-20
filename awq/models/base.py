@@ -3,6 +3,7 @@ import gc
 import warnings
 import torch
 import transformers
+import ipex_llm.transformers as ipex_transformers
 import torch.nn as nn
 
 from tqdm import tqdm
@@ -360,7 +361,7 @@ class BaseAWQForCausalLM(nn.Module):
         )
 
         target_cls_name = TRANSFORMERS_AUTO_MAPPING_DICT[config.model_type]
-        target_cls = getattr(transformers, target_cls_name)
+        target_cls = getattr(ipex_transformers, target_cls_name)
 
         processor = None
         if target_cls_name == "AutoModelForVision2Seq":
@@ -375,6 +376,7 @@ class BaseAWQForCausalLM(nn.Module):
             device_map=device_map,
             **model_init_kwargs,
         )
+        model = ipex.optimize_transformers(model.eval(), dtype=torch.float16, device="xpu")
 
         model.eval()
 

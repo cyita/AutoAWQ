@@ -1,3 +1,5 @@
+import time
+import copy
 import torch
 import inspect
 import logging
@@ -22,6 +24,8 @@ from awq.utils.module import (
     set_op_by_name,
     exclude_layers_to_not_quantize,
 )
+
+logging.basicConfig(level=logging.INFO)
 
 
 class AwqQuantizer:
@@ -75,6 +79,8 @@ class AwqQuantizer:
         if self.group_size > 0:
             assert org_w_shape[-1] % self.group_size == 0
             w = w.reshape(-1, self.group_size)
+        else:
+            w = w.reshape(-1, org_w_shape[-1])
         assert w.dim() == 2
         assert torch.isnan(w).sum() == 0
 
@@ -125,6 +131,7 @@ class AwqQuantizer:
 
     def quantize(self):
         for i in tqdm(range(len(self.modules)), desc="AWQ"):
+        # for i in tqdm(range(len(self.modules)-1, -1, -1), desc="AWQ"):
             # Move module and inputs to correct device
             common_device = next(self.modules[i].parameters()).device
             if common_device is None or str(common_device) == "cpu":
@@ -156,21 +163,34 @@ class AwqQuantizer:
                 named_linears, self.modules_to_not_convert
             )
 
+            logging.info(f"Module: {i}")
+
+            t1 = time.perf_counter()
             input_feat = self._get_input_feat(self.modules[i], named_linears)
+            # torch.save(input_feat['self_attn.q_proj'], f"input_feat_{i}.pt")
             clear_memory()
+            t2 = time.perf_counter()
+            logging.info(f"Time get input features: {(t2 - t1)*1000:.2f}ms")
 
             # [STEP 2]: Compute and apply scale list
             module_config: List[Dict] = self.awq_model.get_layers_for_scaling(
                 self.modules[i], input_feat, self.module_kwargs
             )
-            scales_list = [
-                self._search_best_scale(self.modules[i], **layer)
-                for layer in module_config
-            ]
+            # scales_list = [
+            #     self._search_best_scale(self.modules[i], **layer)
+            #     for layer in module_config
+            # ]
+            scales_list = []
+            for layer in module_config:
+                scale = self._search_best_scale(self.modules[i], **layer)
+                scales_list.append(scale)
             apply_scale(self.modules[i], scales_list, input_feat_dict=input_feat)
             scales_list = append_str_prefix(
                 scales_list, get_op_name(self.model, self.modules[i]) + "."
             )
+            t3 = time.perf_counter()
+            logging.info(f"Time scale search total: {(t3 - t2)*1000:.2f}ms")
+
 
             # [STEP 3]: Compute and apply clipping list
             if self.apply_clip:
@@ -181,6 +201,9 @@ class AwqQuantizer:
                 clip_list = append_str_prefix(
                     clip_list, get_op_name(self.model, self.modules[i]) + "."
                 )
+            t4 = time.perf_counter()
+            logging.info(f"Time clip search total: {(t4 - t3)*1000:.2f}ms")
+
 
             # [STEP 4]: Quantize weights
             if not self.export_compatible:
@@ -272,6 +295,7 @@ class AwqQuantizer:
         layers: List[nn.Linear],
         inp: torch.Tensor,
         module2inspect=None,
+        name=None,
         kwargs={},
     ):
         if module2inspect is None:
@@ -284,12 +308,15 @@ class AwqQuantizer:
         # Put x on the right device
         inp = inp.to(next(module2inspect.parameters()).device)
 
+        logging.info(f"Time search scale name: {name}")
+
         # [STEP 1]: Compute per-channel mean of normalised weights
         # All layer weights are concatted together
         weight = torch.cat([_m.weight for _m in layers], dim=0)
         org_shape = weight.shape
         # The weights are reshaped to be organised by quantization group
-        weight = weight.view(-1, self.group_size)
+        if self.group_size > 0:
+            weight = weight.view(-1, self.group_size)
         # Calculates the relative magnitude of the weights within each of the quantization groups,
         # and rescales each group individually so that each group has weights on a 0-1 scale.
         w_scale = weight.abs() / (weight.abs().amax(dim=1, keepdim=True) + 1e-6)
@@ -320,16 +347,24 @@ class AwqQuantizer:
 
         x_mean = (x_sum / num_elements).to(inp.dtype)
         clear_memory(x_sum)
+        
+        module_kwargs = self._sanitize_kwargs(kwargs, module2inspect)
 
         # [STEP 3]: Compute output of module
         with torch.no_grad():
-            module_kwargs = self._sanitize_kwargs(kwargs, module2inspect)
-            fp16_output = self._module_forward(inp, module2inspect, module_kwargs)
+            t1 = time.perf_counter()
+            fp16_output = self._module_forward(inp, module2inspect, copy.deepcopy(module_kwargs))
+            t2 = time.perf_counter()
+            logging.info(f"Time scale gt: {(t2 - t1)*1000:.2f}ms")
+
 
         # [STEP 4]: Compute loss
         best_scales = self._compute_best_scale(
             inp, w_mean, x_mean, module2inspect, layers, fp16_output, module_kwargs
         )
+        t3 = time.perf_counter()
+        logging.info(f"Time scale search: {(t3 - t2)*1000:.2f}ms")
+
 
         return (
             get_op_name(module, prev_op),
@@ -368,6 +403,8 @@ class AwqQuantizer:
         x_mean = x_mean.view(-1).to(device)
         w_mean = w_mean.view(-1).to(device)
 
+        linear_weight_copy = [fc.weight.data.clone() for fc in linears2scale]
+
         for ratio in range(n_grid):
             # create new scales
             ratio = ratio / n_grid
@@ -385,17 +422,27 @@ class AwqQuantizer:
             scales[torch.isnan(scales)] = 1
 
             # Q(W * s)
+            t0 = time.perf_counter()
             for fc in linears2scale:
                 fc.weight.mul_(scales_view)
                 fc.weight.data = (
                     self.pseudo_quantize_tensor(fc.weight.data)[0] / scales_view
                 )
+                # fc.weight.data = self.pseudo_quantize_tensor(fc.weight.data)[0]
+                # pass
+            t1 = time.perf_counter()
+            logging.info(f"Time scale pseudo: {(t1 - t0)*1000:.2f}ms")
 
             # W * X
-            int_w_output = self._module_forward(x, module2inspect, kwargs)
+            int_w_output = self._module_forward(x, module2inspect, copy.deepcopy(kwargs))
+            t2 = time.perf_counter()
+            logging.info(f"Time scale sub: {(t2 - t1)*1000:.2f}ms")
+
 
             # compute mean squared error (L2 norm)
             loss = self._compute_loss(fp16_output, int_w_output, device)
+            t3 = time.perf_counter()
+            logging.info(f"Time scale loss: {(t3 - t2)*1000:.2f}ms")
 
             history.append(loss)
             if loss < best_error:
@@ -456,7 +503,7 @@ class AwqQuantizer:
 
             named_linears[name].to(get_best_device())
             max_val = self._compute_best_clip(
-                named_linears[name].weight, input_feat[name]
+                named_linears[name].weight, input_feat[name], name=name
             )
             clip_list.append((name, max_val))
             named_linears[name].cpu()
@@ -471,6 +518,7 @@ class AwqQuantizer:
         n_grid=20,
         max_shrink=0.5,
         n_sample_token=512,
+        name=None,
     ):
         assert w.dim() == 2
         org_w_shape = w.shape
@@ -487,10 +535,12 @@ class AwqQuantizer:
         w = w.reshape(org_w_shape[0], 1, -1, group_size)
 
         oc_batch_size = 256 if org_w_shape[0] % 256 == 0 else 64  # prevent OOM
+        # oc_batch_size = 128
         assert org_w_shape[0] % oc_batch_size == 0
         w_all = w
         best_max_val_all = []
 
+        t1 = time.perf_counter()
         for i_b in range(org_w_shape[0] // oc_batch_size):
             w = w_all[i_b * oc_batch_size : (i_b + 1) * oc_batch_size]
 
@@ -499,14 +549,22 @@ class AwqQuantizer:
             best_max_val = org_max_val.clone()
             min_errs = torch.ones_like(org_max_val) * 1e9
             input_feat = input_feat.to(w.device)
+            t3 = time.perf_counter()
             org_out = (input_feat * w).sum(dim=-1)  # co, n_token, n_group
+            t4 = time.perf_counter()
+            logging.info(f"Time clip search gt: {(t4 - t3)*1000:.2f}ms")
 
             for i_s in range(int(max_shrink * n_grid)):
                 max_val = org_max_val * (1 - i_s / n_grid)
                 min_val = -max_val
                 cur_w = torch.clamp(w, min_val, max_val)
+                t5 = time.perf_counter()
                 q_w = self.pseudo_quantize_tensor(cur_w)[0]
+                t6 = time.perf_counter()
+                logging.info(f"Time clip search pseudo: {(t6 - t5)*1000:.2f}ms")
                 cur_out = (input_feat * q_w).sum(dim=-1)
+                t7 = time.perf_counter()
+                logging.info(f"Time clip search sub: {(t7 - t6)*1000:.2f}ms")
 
                 # co, 1, n_group, 1
                 err = (cur_out - org_out).pow(2).mean(dim=1).view(min_errs.shape)
@@ -518,6 +576,8 @@ class AwqQuantizer:
             best_max_val_all.append(best_max_val)
 
         best_max_val = torch.cat(best_max_val_all, dim=0)
+        t2 = time.perf_counter()
+        logging.info(f"Time clip search name {name}: {(t2 - t1)*1000:.2f}ms")
 
         clear_memory(input_feat)
         clear_memory(org_out)
@@ -629,6 +689,7 @@ class AwqQuantizer:
         # kwargs that are not handled by the module.
         # Useful for trust_remote_code models.
         module_kwargs = self._sanitize_kwargs(self.module_kwargs, layer)
+        module_kwargs = copy.deepcopy(module_kwargs)
 
         self.inps = self._module_forward(self.inps, layer, module_kwargs)
         for h in handles:

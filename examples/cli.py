@@ -1,3 +1,4 @@
+import os
 import argparse
 from awq import AutoAWQForCausalLM
 from transformers import AutoTokenizer
@@ -14,6 +15,7 @@ def main():
     parser.add_argument("--q_group_size", type=int, default=128, help="Quantization group size")
     parser.add_argument("--w_bit", type=int, default=4, help="Weight bit width")
     parser.add_argument("--version", type=str, default="GEMM", help="Quantization version")
+    parser.add_argument("--export_compatible", action="store_true", help="This argument avoids real quantization by only applying the scales without quantizing down to FP16.")
 
     # Model config arguments
     parser.add_argument("--low_cpu_mem_usage", action="store_true", help="Use low CPU memory")
@@ -49,11 +51,12 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(args.hf_model_path, trust_remote_code=True)
 
     print(f"Quantizing model with config: {quant_config}")
-    model.quantize(tokenizer, quant_config=quant_config)
+    model.quantize(tokenizer, quant_config=quant_config, export_compatible=args.export_compatible)
 
-    print(f"Saving quantized model to: {args.local_save_path}")
-    model.save_quantized(args.local_save_path)
-    tokenizer.save_pretrained(args.local_save_path)
+    save_path = os.path.join(args.local_save_path, args.quant_name)
+    print(f"Saving quantized model to: {save_path}")
+    model.save_quantized(save_path)
+    tokenizer.save_pretrained(save_path)
 
     print(f"Quantized model '{args.quant_name}' saved successfully.")
 

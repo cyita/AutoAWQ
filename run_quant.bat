@@ -1,0 +1,1 @@
+python quantize.py >> quant.log 2>&1

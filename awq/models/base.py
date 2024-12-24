@@ -285,32 +285,34 @@ class BaseAWQForCausalLM(nn.Module):
 
             def forward(self, x):
                 return x
+            
+        self.model.save_low_bit(save_dir)
 
-        # Save model and config files with empty state dict
-        self.model.config.quantization_config = self.quant_config.to_transformers_dict()
-        self.model.generation_config.do_sample = True
-        self.model.save_pretrained(save_dir, state_dict=EmptyModule().state_dict())
+        # # Save model and config files with empty state dict
+        # self.model.config.quantization_config = self.quant_config.to_transformers_dict()
+        # self.model.generation_config.do_sample = True
+        # self.model.save_pretrained(save_dir, state_dict=EmptyModule().state_dict())
 
-        # Vision transformers have a processor
-        if self.processor is not None:
-            self.processor.save_pretrained(save_dir)
+        # # Vision transformers have a processor
+        # if self.processor is not None:
+        #     self.processor.save_pretrained(save_dir)
 
-        # Remove empty state dict
-        default_paths = [
-            f"{save_dir}/model.safetensors",
-            f"{save_dir}/pytorch_model.bin",
-        ]
-        for path in default_paths:
-            if os.path.exists(path):
-                os.remove(path)
+        # # Remove empty state dict
+        # default_paths = [
+        #     f"{save_dir}/model.safetensors",
+        #     f"{save_dir}/pytorch_model.bin",
+        # ]
+        # for path in default_paths:
+        #     if os.path.exists(path):
+        #         os.remove(path)
 
-        save_torch_state_dict(
-            state_dict=self.model.state_dict(),
-            save_directory=save_dir,
-            max_shard_size=shard_size,
-            safe_serialization=safetensors,
-            force_contiguous=True,
-        )
+        # save_torch_state_dict(
+        #     state_dict=self.model.state_dict(),
+        #     save_directory=save_dir,
+        #     max_shard_size=shard_size,
+        #     safe_serialization=safetensors,
+        #     force_contiguous=True,
+        # )
 
     @classmethod
     def from_pretrained(
@@ -372,11 +374,11 @@ class BaseAWQForCausalLM(nn.Module):
             model_weights_path,
             trust_remote_code=trust_remote_code,
             torch_dtype=torch_dtype,
+            load_in_low_bit="fp16",
             use_safetensors=safetensors,
             device_map=device_map,
             **model_init_kwargs,
         )
-        model = ipex.optimize_transformers(model.eval(), dtype=torch.float16, device="xpu")
 
         model.eval()
 

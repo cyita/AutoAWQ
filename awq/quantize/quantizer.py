@@ -73,6 +73,7 @@ class AwqQuantizer:
         self.modules, self.module_kwargs, self.inps = self.init_quant(
             n_samples=self.max_calib_samples, max_seq_len=self.max_calib_seq_len
         )
+        self.module_kwargs['attention_mask'] = None
 
     def pseudo_quantize_tensor(self, w: torch.Tensor):
         org_w_shape = w.shape
@@ -188,6 +189,7 @@ class AwqQuantizer:
             scales_list = append_str_prefix(
                 scales_list, get_op_name(self.model, self.modules[i]) + "."
             )
+            torch.save(scales_list, f"scales_list_{i}.pt")
             t3 = time.perf_counter()
             logging.info(f"Time scale search total: {(t3 - t2)*1000:.2f}ms")
 
@@ -197,6 +199,7 @@ class AwqQuantizer:
                 clip_list = self._search_best_clip(
                     self.modules[i], named_linears, input_feat
                 )
+                torch.save(clip_list, f"clip_list_{i}.pt")
                 apply_clip(self.modules[i], clip_list)
                 clip_list = append_str_prefix(
                     clip_list, get_op_name(self.model, self.modules[i]) + "."

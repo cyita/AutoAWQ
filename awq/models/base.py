@@ -10,16 +10,17 @@ from tqdm import tqdm
 from typing import List, Union, Dict
 from typing_extensions import Doc, Annotated
 from huggingface_hub import snapshot_download, save_torch_state_dict
+# import intel_extension_for_pytorch as ipex
 
 from awq.modules.linear import (
     WQLinear_GEMM,
     WQLinear_GEMV,
     WQLinear_IPEX,
-    WQLinear_Marlin,
+    # WQLinear_Marlin,
     WQLinear_Exllama,
     WQLinear_ExllamaV2,
     WQLinear_GEMVFast,
-    marlin_post_init,
+    # marlin_post_init,
     exllama_post_init,
     exllamav2_post_init,
     ipex_post_init,
@@ -275,6 +276,7 @@ class BaseAWQForCausalLM(nn.Module):
         shard_size: Annotated[
             str, Doc("The shard size for sharding large models into multiple chunks.")
         ] = "5GB",
+        quantized = True
     ):
         save_dir = save_dir[:-1] if save_dir[-1] == "/" else save_dir
 
@@ -286,33 +288,34 @@ class BaseAWQForCausalLM(nn.Module):
             def forward(self, x):
                 return x
             
-        self.model.save_low_bit(save_dir)
+        # self.model.save_low_bit(save_dir)
 
-        # # Save model and config files with empty state dict
-        # self.model.config.quantization_config = self.quant_config.to_transformers_dict()
-        # self.model.generation_config.do_sample = True
-        # self.model.save_pretrained(save_dir, state_dict=EmptyModule().state_dict())
+        # Save model and config files with empty state dict
+        if quantized:
+            self.model.config.quantization_config = self.quant_config.to_transformers_dict()
+        self.model.generation_config.do_sample = True
+        self.model.save_pretrained(save_dir, state_dict=EmptyModule().state_dict())
 
-        # # Vision transformers have a processor
-        # if self.processor is not None:
-        #     self.processor.save_pretrained(save_dir)
+        # Vision transformers have a processor
+        if self.processor is not None:
+            self.processor.save_pretrained(save_dir)
 
-        # # Remove empty state dict
-        # default_paths = [
-        #     f"{save_dir}/model.safetensors",
-        #     f"{save_dir}/pytorch_model.bin",
-        # ]
-        # for path in default_paths:
-        #     if os.path.exists(path):
-        #         os.remove(path)
+        # Remove empty state dict
+        default_paths = [
+            f"{save_dir}/model.safetensors",
+            f"{save_dir}/pytorch_model.bin",
+        ]
+        for path in default_paths:
+            if os.path.exists(path):
+                os.remove(path)
 
-        # save_torch_state_dict(
-        #     state_dict=self.model.state_dict(),
-        #     save_directory=save_dir,
-        #     max_shard_size=shard_size,
-        #     safe_serialization=safetensors,
-        #     force_contiguous=True,
-        # )
+        save_torch_state_dict(
+            state_dict=self.model.state_dict(),
+            save_directory=save_dir,
+            max_shard_size=shard_size,
+            safe_serialization=safetensors,
+            force_contiguous=True,
+        )
 
     @classmethod
     def from_pretrained(
@@ -364,6 +367,7 @@ class BaseAWQForCausalLM(nn.Module):
 
         target_cls_name = TRANSFORMERS_AUTO_MAPPING_DICT[config.model_type]
         target_cls = getattr(ipex_transformers, target_cls_name)
+        # target_cls = getattr(transformers, target_cls_name)
 
         processor = None
         if target_cls_name == "AutoModelForVision2Seq":
@@ -379,6 +383,15 @@ class BaseAWQForCausalLM(nn.Module):
             device_map=device_map,
             **model_init_kwargs,
         )
+
+        # model = target_cls.from_pretrained(
+        #     model_weights_path,
+        #     trust_remote_code=trust_remote_code,
+        #     torch_dtype=torch.float16,
+        #     use_safetensors=safetensors,
+        #     device_map=device_map,
+        #     **model_init_kwargs,
+        # )
 
         model.eval()
 

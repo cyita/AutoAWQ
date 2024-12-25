@@ -3,7 +3,7 @@ import torch
 from awq.modules.linear import (
     WQLinear_GEMM,
     WQLinear_GEMV,
-    WQLinear_Marlin,
+    # WQLinear_Marlin,
     WQLinear_Exllama,
     WQLinear_ExllamaV2,
     WQLinear_GEMVFast,

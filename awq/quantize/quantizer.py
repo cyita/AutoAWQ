@@ -14,7 +14,7 @@ from awq.utils.utils import clear_memory, get_best_device
 from awq.modules.linear import (
     WQLinear_GEMM,
     WQLinear_GEMV,
-    WQLinear_Marlin,
+    # WQLinear_Marlin,
     WQLinear_GEMVFast,
 )
 from awq.utils.module import (
@@ -169,6 +169,7 @@ class AwqQuantizer:
             t1 = time.perf_counter()
             input_feat = self._get_input_feat(self.modules[i], named_linears)
             # torch.save(input_feat['self_attn.q_proj'], f"input_feat_{i}.pt")
+            torch.xpu.synchronize()
             clear_memory()
             t2 = time.perf_counter()
             logging.info(f"Time get input features: {(t2 - t1)*1000:.2f}ms")
@@ -357,6 +358,7 @@ class AwqQuantizer:
         with torch.no_grad():
             t1 = time.perf_counter()
             fp16_output = self._module_forward(inp, module2inspect, copy.deepcopy(module_kwargs))
+            torch.xpu.synchronize()
             t2 = time.perf_counter()
             logging.info(f"Time scale gt: {(t2 - t1)*1000:.2f}ms")
 
@@ -438,12 +440,14 @@ class AwqQuantizer:
 
             # W * X
             int_w_output = self._module_forward(x, module2inspect, copy.deepcopy(kwargs))
+            torch.xpu.synchronize()
             t2 = time.perf_counter()
             logging.info(f"Time scale sub: {(t2 - t1)*1000:.2f}ms")
 
 
             # compute mean squared error (L2 norm)
             loss = self._compute_loss(fp16_output, int_w_output, device)
+            torch.xpu.synchronize()
             t3 = time.perf_counter()
             logging.info(f"Time scale loss: {(t3 - t2)*1000:.2f}ms")
 
@@ -457,6 +461,8 @@ class AwqQuantizer:
         if best_ratio == -1:
             logging.debug(history)
             raise Exception
+        
+        print(f"best_ratio: {best_ratio}, best_error: {best_error}, scales max: {torch.max(best_scales)}, scales mean: {torch.mean(best_scales)}")
 
         assert torch.isnan(best_scales).sum() == 0, best_scales
 
@@ -469,6 +475,15 @@ class AwqQuantizer:
         int_w_output: torch.Tensor,
         device: torch.device,
     ):
+        # # from torch.nn.functional import mse_loss
+        # import torch.nn as nn
+        # loss = nn.MSELoss()
+        # loss1 = loss(
+        #     fp16_output,int_w_output
+        # ).item()
+        # # loss1 = mse_loss(fp16_output,int_w_output).item()
+        # # loss2 = mse_loss(fp16_output.to("cpu"), int_w_output.to("cpu")).item()
+        # return loss1
         loss = 0.0
         fp16_output_flat = fp16_output.view(-1)
         int_w_output_flat = int_w_output.view(-1)
@@ -488,6 +503,8 @@ class AwqQuantizer:
         for fp16_chunk, int_w_chunk in zip(fp16_chunks, int_w_chunks):
             chunk_loss = (fp16_chunk.to(device) - int_w_chunk.to(device)).float().pow(2).sum().item()
             loss += chunk_loss
+
+        # loss = (fp16_output_flat.to(device) - int_w_output_flat.to(device)).float().pow(2).sum().item()
 
         # Normalize the loss by the total number of elements
         loss /= num_elements
@@ -554,6 +571,7 @@ class AwqQuantizer:
             input_feat = input_feat.to(w.device)
             t3 = time.perf_counter()
             org_out = (input_feat * w).sum(dim=-1)  # co, n_token, n_group
+            torch.xpu.synchronize()
             t4 = time.perf_counter()
             logging.info(f"Time clip search gt: {(t4 - t3)*1000:.2f}ms")
 
@@ -563,9 +581,11 @@ class AwqQuantizer:
                 cur_w = torch.clamp(w, min_val, max_val)
                 t5 = time.perf_counter()
                 q_w = self.pseudo_quantize_tensor(cur_w)[0]
+                torch.xpu.synchronize()
                 t6 = time.perf_counter()
                 logging.info(f"Time clip search pseudo: {(t6 - t5)*1000:.2f}ms")
                 cur_out = (input_feat * q_w).sum(dim=-1)
+                torch.xpu.synchronize()
                 t7 = time.perf_counter()
                 logging.info(f"Time clip search sub: {(t7 - t6)*1000:.2f}ms")
 

@@ -1,6 +1,6 @@
 import numpy as np
 
-log_path="/home/arda/yina/AutoAWQ/q40-wo-duo.log"
+log_path="/home/arda/yina/AutoAWQ/logs/igpu_log3.log"
 
 def get_float(line):
     return float(line[:-3])
@@ -68,7 +68,7 @@ def print_results():
         print(key, " = ", clip_search_sub_total_dict[key], " ms")
     print("\nClip search inference total = ", round(inference_total / 1000, 4), " s")
     print("Clip search pseudo total = ", round(pseudo_total / 1000, 4), " s")
-    print("\nClip search layers total = ", round(sub_total /1000, 4), " ms")
+    print("\nClip search layers total = ", round(sub_total /1000, 4), " s")
     print("Clip search total = ", round(clip_search_total /1000, 4), " s\n")
 
     print("--------------------")

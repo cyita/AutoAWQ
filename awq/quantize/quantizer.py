@@ -454,6 +454,8 @@ class AwqQuantizer:
         if best_ratio == -1:
             logging.debug(history)
             raise Exception
+        
+        print(f"best_ratio: {best_ratio}, best_error: {best_error}, scales max: {torch.max(best_scales)}, scales mean: {torch.mean(best_scales)}")
 
         assert torch.isnan(best_scales).sum() == 0, best_scales
 

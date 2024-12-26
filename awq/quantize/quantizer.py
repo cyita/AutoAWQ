@@ -408,7 +408,7 @@ class AwqQuantizer:
         x_mean = x_mean.view(-1).to(device)
         w_mean = w_mean.view(-1).to(device)
 
-        linear_weight_copy = [fc.weight.data.clone() for fc in linears2scale]
+        # linear_weight_copy = [fc.weight.data.clone() for fc in linears2scale]
 
         for ratio in range(n_grid):
             # create new scales
@@ -459,7 +459,13 @@ class AwqQuantizer:
             module2inspect.load_state_dict(org_sd)
 
         if best_ratio == -1:
-            logging.debug(history)
+            print(history)
+            logging.info(history)
+            compare_dict = [
+                fp16_output,
+                int_w_output
+            ]
+            torch.save(compare_dict, "error_tensors.pt")
             raise Exception
         
         print(f"best_ratio: {best_ratio}, best_error: {best_error}, scales max: {torch.max(best_scales)}, scales mean: {torch.mean(best_scales)}")
